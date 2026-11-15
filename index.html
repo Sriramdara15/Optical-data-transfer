@@ -9,26 +9,51 @@
       font-family: sans-serif;
       text-align: center;
       padding: 20px;
-      background: #ccc;
+      background: #1a1a1a;
+      color: #f0f0f0;
     }
     video {
       width: 100%;
-      max-width: 400px;
+      max-width: 360px;
       background: #000;
+      border: 2px solid #444;
+      border-radius: 8px;
     }
     .control-group {
-      margin: 20px 0;
+      margin: 20px auto;
+      max-width: 400px;
+      background: #262626;
+      padding: 15px;
+      border-radius: 10px;
     }
     textarea {
-      width: 80%;
-      max-width: 300px;
+      width: 90%;
       height: 60px;
+      font-size: 16px;
+      padding: 8px;
+      border-radius: 5px;
+      border: none;
     }
     button {
       padding: 10px 20px;
       font-size: 16px;
       margin-top: 10px;
       cursor: pointer;
+      background: #007bff;
+      color: white;
+      border: none;
+      border-radius: 5px;
+    }
+    button:disabled {
+      background: #555;
+    }
+    .output-box {
+      background: #111;
+      padding: 10px;
+      border-radius: 5px;
+      margin-top: 10px;
+      font-family: monospace;
+      word-break: break-all;
     }
   </style>
 </head>
@@ -37,21 +62,29 @@
 
   <div class="control-group">
     <h2>Sender</h2>
-    <textarea id="textInput" placeholder="Enter text"></textarea><br>
-    <button onclick="startTransmission()">Transmit</button>
+    <textarea id="textInput" placeholder="Enter short message (e.g., Hi)"></textarea><br>
+    <button id="sendBtn" onclick="startTransmission()">Transmit</button>
+    <p><small id="senderStatus">Ready</small></p>
   </div>
-
-  <hr>
 
   <div class="control-group">
     <h2>Receiver</h2>
     <video id="video" autoplay playsinline muted></video><br>
     <button onclick="startReception()">Start Receiver</button>
-    <p>Status: <span id="status">Idle</span></p>
-    <p>Received: <span id="receivedText"></span></p>
+    <p>Status: <strong id="status">Idle</strong></p>
+    <div class="output-box">
+      <div>Binary: <span id="binaryDisplay">-</span></div>
+      <div style="margin-top: 8px; font-size: 18px; color: #4caf50;">
+        Decoded: <span id="receivedText">-</span>
+      </div>
+    </div>
   </div>
 
   <script>
+    const BIT_DURATION = 250; // ms per bit (slower = more reliable on mobile cameras)
+    const PREAMBLE = "10101010";
+    const EOT_CHAR = "00000100"; // End of Transmission ASCII (4)
+
     // --- SENDER LOGIC ---
     function textToBinary(text) {
       return text.split('').map(char =>
@@ -61,9 +94,13 @@
 
     async function startTransmission() {
       const text = document.getElementById('textInput').value;
+      const sendBtn = document.getElementById('sendBtn');
+      const senderStatus = document.getElementById('senderStatus');
       if (!text) return;
 
-      const binary = textToBinary(text);
+      sendBtn.disabled = true;
+      senderStatus.innerText = "Accessing torch...";
+
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -71,62 +108,66 @@
         });
       } catch (err) {
         alert("Sender Camera/Torch Error: " + err.message);
+        sendBtn.disabled = false;
         return;
       }
 
       const track = stream.getVideoTracks()[0];
+      const binaryPayload = textToBinary(text) + EOT_CHAR;
+      const fullSignal = PREAMBLE + binaryPayload;
 
-      // Preamble flash pattern to signal start (e.g., 10101010)
-      const preamble = "10101010";
-      const fullSignal = preamble + binary;
-      const duration = 200; // ms per bit
+      senderStatus.innerText = "Transmitting (" + fullSignal.length + " bits)...";
 
-      for (let bit of fullSignal) {
+      for (let i = 0; i < fullSignal.length; i++) {
+        const bit = fullSignal[i];
         try {
           await track.applyConstraints({
             advanced: [{ torch: bit === '1' }]
           });
         } catch (err) {
-          console.log("Torch not supported or failed:", err);
+          console.log("Torch error:", err);
         }
-        await new Promise(r => setTimeout(r, duration));
+        await new Promise(r => setTimeout(r, BIT_DURATION));
       }
 
-      // Turn off torch at the end
+      // Ensure torch turns off
       try {
         await track.applyConstraints({ advanced: [{ torch: false }] });
       } catch (e) {}
       track.stop();
+
+      senderStatus.innerText = "Transmission complete!";
+      sendBtn.disabled = false;
     }
 
     // --- RECEIVER LOGIC ---
     let mediaStream = null;
-    let isReceiving = false;
+    let samplerInterval = null;
 
     async function startReception() {
       const video = document.getElementById('video');
       const statusDisplay = document.getElementById('status');
+      const binaryDisplay = document.getElementById('binaryDisplay');
       const textDisplay = document.getElementById('receivedText');
 
-      // Stop existing stream if already running
       if (mediaStream) {
-        mediaStream.getTracks().forEach(track => track.stop());
+        mediaStream.getTracks().forEach(t => t.stop());
+      }
+      if (samplerInterval) {
+        clearInterval(samplerInterval);
       }
 
-      statusDisplay.innerText = "Requesting camera...";
+      statusDisplay.innerText = "Starting camera...";
+      binaryDisplay.innerText = "-";
+      textDisplay.innerText = "-";
 
       try {
-        // Try rear camera first
         mediaStream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'environment' }
         });
       } catch (err) {
-        console.warn("Rear camera unavailable, falling back to default camera:", err);
         try {
-          // Fallback to any available camera
-          mediaStream = await navigator.mediaDevices.getUserMedia({
-            video: true
-          });
+          mediaStream = await navigator.mediaDevices.getUserMedia({ video: true });
         } catch (fallbackErr) {
           statusDisplay.innerText = "Camera Error: " + fallbackErr.message;
           return;
@@ -134,50 +175,114 @@
       }
 
       video.srcObject = mediaStream;
-      try {
-        await video.play();
-      } catch (playErr) {
-        console.warn("Video play notice:", playErr);
-      }
+      await video.play();
 
-      statusDisplay.innerText = "Listening for preamble...";
-      textDisplay.innerText = "";
-      isReceiving = true;
-      analyzeFrame();
-    }
+      // Canvas setup for fast brightness sampling
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      canvas.width = 20;
+      canvas.height = 20;
 
-    function analyzeFrame() {
-      if (!isReceiving) return;
+      // Calibration phase: measure ambient brightness for 1 second
+      statusDisplay.innerText = "Calibrating ambient light...";
+      let ambientSamples = [];
 
-      const video = document.getElementById('video');
-      const statusDisplay = document.getElementById('status');
-      const textDisplay = document.getElementById('receivedText');
-
-      if (video.readyState === video.HAVE_ENOUGH_DATA) {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        canvas.width = 20;
-        canvas.height = 20;
-
-        // Sample the center of the video feed
+      const getBrightness = () => {
+        if (video.readyState !== video.HAVE_ENOUGH_DATA) return 0;
         const sx = Math.max(0, (video.videoWidth / 2) - 10);
         const sy = Math.max(0, (video.videoHeight / 2) - 10);
         ctx.drawImage(video, sx, sy, 20, 20, 0, 0, 20, 20);
-
-        const frameData = ctx.getImageData(0, 0, 20, 20).data;
-
-        // Calculate average brightness
-        let totalBrightness = 0;
-        for (let i = 0; i < frameData.length; i += 4) {
-          totalBrightness += (frameData[i] + frameData[i + 1] + frameData[i + 2]) / 3;
+        const data = ctx.getImageData(0, 0, 20, 20).data;
+        let total = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          total += (data[i] + data[i + 1] + data[i + 2]) / 3;
         }
-        const avgBrightness = totalBrightness / (frameData.length / 4);
+        return total / (data.length / 4);
+      };
 
-        // Display live brightness level to help align the phone torch
-        statusDisplay.innerText = `Listening (Brightness: ${Math.round(avgBrightness)})`;
-      }
+      // Collect ambient baseline
+      await new Promise(resolve => {
+        const calTimer = setInterval(() => {
+          ambientSamples.push(getBrightness());
+          if (ambientSamples.length >= 10) {
+            clearInterval(calTimer);
+            resolve();
+          }
+        }, 100);
+      });
 
-      requestAnimationFrame(analyzeFrame);
+      const ambientAvg = ambientSamples.reduce((a, b) => a + b, 0) / ambientSamples.length;
+      // Threshold is halfway between ambient light and max brightness (255), with a minimum jump of +35
+      const threshold = Math.min(245, Math.max(ambientAvg + 35, (ambientAvg + 255) / 2));
+
+      statusDisplay.innerText = `Listening (Base: ${Math.round(ambientAvg)}, Thresh: ${Math.round(threshold)})`;
+
+      // State machine for preamble sync & bit reading
+      let state = "WAITING_FOR_FIRST_ONE";
+      let bitBuffer = "";
+      let decodedChars = "";
+
+      // Sample every BIT_DURATION ms once locked onto the first flash
+      const pollRate = 25; // Check every 25ms for the rising edge of the first '1'
+      let lastSampleTime = 0;
+
+      samplerInterval = setInterval(() => {
+        const currentBrightness = getBrightness();
+        const bit = currentBrightness > threshold ? "1" : "0";
+        const now = Date.now();
+
+        if (state === "WAITING_FOR_FIRST_ONE") {
+          if (bit === "1") {
+            // Rising edge detected! Wait half a bit duration so future samples hit the center of each bit
+            state = "LOCKING";
+            lastSampleTime = now + (BIT_DURATION / 2);
+            statusDisplay.innerText = "Signal detected, syncing...";
+          }
+        } else if (state === "LOCKING") {
+          if (now >= lastSampleTime) {
+            state = "READING_PREAMBLE";
+            bitBuffer = bit; // First bit of preamble ('1')
+            lastSampleTime = now;
+            binaryDisplay.innerText = bitBuffer;
+          }
+        } else if (state === "READING_PREAMBLE" || state === "READING_DATA") {
+          if (now - lastSampleTime >= BIT_DURATION) {
+            lastSampleTime += BIT_DURATION;
+            bitBuffer += bit;
+            binaryDisplay.innerText = bitBuffer;
+
+            if (state === "READING_PREAMBLE") {
+              if (bitBuffer.length === 8) {
+                if (bitBuffer === PREAMBLE) {
+                  state = "READING_DATA";
+                  bitBuffer = "";
+                  statusDisplay.innerText = "Preamble matched! Receiving text...";
+                } else {
+                  // False trigger; reset
+                  state = "WAITING_FOR_FIRST_ONE";
+                  bitBuffer = "";
+                  statusDisplay.innerText = `Sync failed, listening (Thresh: ${Math.round(threshold)})`;
+                }
+              }
+            } else if (state === "READING_DATA") {
+              // Every 8 bits = 1 ASCII character
+              if (bitBuffer.length === 8) {
+                if (bitBuffer === EOT_CHAR) {
+                  // End of transmission reached
+                  clearInterval(samplerInterval);
+                  statusDisplay.innerText = "Transfer Complete!";
+                  return;
+                }
+                const charCode = parseInt(bitBuffer, 2);
+                const char = String.fromCharCode(charCode);
+                decodedChars += char;
+                textDisplay.innerText = decodedChars;
+                bitBuffer = "";
+              }
+            }
+          }
+        }
+      }, pollRate);
     }
   </script>
 </body>
