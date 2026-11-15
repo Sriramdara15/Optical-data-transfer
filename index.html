@@ -1,112 +1,184 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<style>
-  body { font-family: sans-serif; text-align: center; padding: 20px; }
-  #video { width: 100%; max-width: 400px; background: #ccc; }
-  .control-group { margin: 20px 0; }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Optical Data Transfer</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      text-align: center;
+      padding: 20px;
+      background: #ccc;
+    }
+    video {
+      width: 100%;
+      max-width: 400px;
+      background: #000;
+    }
+    .control-group {
+      margin: 20px 0;
+    }
+    textarea {
+      width: 80%;
+      max-width: 300px;
+      height: 60px;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      margin-top: 10px;
+      cursor: pointer;
+    }
+  </style>
 </head>
 <body>
+  <h1>Optical Data Transfer</h1>
 
-<h1>Optical Data Transfer</h1>
+  <div class="control-group">
+    <h2>Sender</h2>
+    <textarea id="textInput" placeholder="Enter text"></textarea><br>
+    <button onclick="startTransmission()">Transmit</button>
+  </div>
 
-<div>
-  <h2>Sender</h2>
-  <textarea id="textInput" placeholder="Enter text"></textarea><br>
-  <button onclick="startTransmission()">Transmit</button>
-</div>
+  <hr>
 
-<hr>
+  <div class="control-group">
+    <h2>Receiver</h2>
+    <video id="video" autoplay playsinline muted></video><br>
+    <button onclick="startReception()">Start Receiver</button>
+    <p>Status: <span id="status">Idle</span></p>
+    <p>Received: <span id="receivedText"></span></p>
+  </div>
 
-<div>
-  <h2>Receiver</h2>
-  <video id="video" autoplay playsinline></video><br>
-  <button onclick="start Reception()">Start Receiver</button>
-  <p>Status: <span id="status">Idle</span></p>
-  <p>Received: <span id="receivedText"></span></p>
-</div>
-
-<script>
-// --- SENDER LOGIC ---
-async function textToBinary(text) {
-  return text.split('').map(char => 
-    char.charCodeAt(0).toString(2).padStart(8, '0')
-  ).join('');
-}
-
-async function startTransmission() {
-  const text = document.getElementById('textInput').value;
-  if (!text) return;
-  
-  const binary = await textToBinary(text);
-  const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-  const track = stream.getVideoTracks()[0];
-  
-  // Preamble: Flash pattern to signal start (e.g., 10101010)
-  const preamble = "10101010";
-  const fullSignal = preamble + binary;
-
-  for (const bit of fullSignal) {
-    const duration = bit === '1' ? 100 : 100; // Fixed clock rate for simplicity
-    try {
-      await track.applyConstraints({ advanced: [{ torch: bit === '1' }] });
-    } catch (e) {
-      console.log("Torch not supported or failed");
+  <script>
+    // --- SENDER LOGIC ---
+    function textToBinary(text) {
+      return text.split('').map(char =>
+        char.charCodeAt(0).toString(2).padStart(8, '0')
+      ).join('');
     }
-    await new Promise(r => setTimeout(r, duration));
-  }
-  
-  // Turn off torch at the end
-  await track.applyConstraints({ advanced: [{ torch: false }] });
-  track.stop();
-}
 
-// --- RECEIVER LOGIC ---
-let videoElement = document.getElementById('video');
-let statusDisplay = document.getElementById('status');
-let textDisplay = document.getElementById('receivedText');
-let mediaStream = null;
+    async function startTransmission() {
+      const text = document.getElementById('textInput').value;
+      if (!text) return;
 
-async function startReception() {
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-    videoElement.srcObject = mediaStream;
-    statusDisplay.innerText = "Listening for preamble...";
-    analyzeframes();
-  } catch (err) {
-    statusDisplay.innerText = "Camera Error: " + err;
-  }
-}
+      const binary = textToBinary(text);
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' }
+        });
+      } catch (err) {
+        alert("Sender Camera/Torch Error: " + err.message);
+        return;
+      }
 
-function analyzeframes() {
-  const canvas = document.createElement('canvas');
-  const context = canvas.getContext('2d');
-  
-  // Simplified frame analysis loop
-  const interval = setInterval(() => {
-    if (videoElement.paused || videoElement.ended) return;
-    
-    canvas.width = videoElement.videoWidth;
-    canvas.height = videoElement.videoHeight;
-    context.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-    
-    // Sample center pixel brightness
-    const frameData = context.getImageData(canvas.width/2 - 10, canvas.height/2 - 10, 20, 20);
-    let totalBrightness = 0;
-    for (let i = 0; i < frameData.data.length; i += 4) {
-      // Calculate luminance
-      totalBrightness += (frameData.data[i] * 0.299) + (frameData.data[i+1] * 0.587) + (frameData.data[i+2] * 0.114);
+      const track = stream.getVideoTracks()[0];
+
+      // Preamble flash pattern to signal start (e.g., 10101010)
+      const preamble = "10101010";
+      const fullSignal = preamble + binary;
+      const duration = 200; // ms per bit
+
+      for (let bit of fullSignal) {
+        try {
+          await track.applyConstraints({
+            advanced: [{ torch: bit === '1' }]
+          });
+        } catch (err) {
+          console.log("Torch not supported or failed:", err);
+        }
+        await new Promise(r => setTimeout(r, duration));
+      }
+
+      // Turn off torch at the end
+      try {
+        await track.applyConstraints({ advanced: [{ torch: false }] });
+      } catch (e) {}
+      track.stop();
     }
-    const averageBrightness = totalBrightness / (frameData.data.length / 4);
-    
-    // In a full implementation, you would track transitions here against a threshold
-    // to detect the preamble and decode the bits.
-    // console.log("Brightness:", averageBrightness);
 
-  }, 100); // Sample rate linked to sender clock
-}
-</script>
+    // --- RECEIVER LOGIC ---
+    let mediaStream = null;
+    let isReceiving = false;
 
+    async function startReception() {
+      const video = document.getElementById('video');
+      const statusDisplay = document.getElementById('status');
+      const textDisplay = document.getElementById('receivedText');
+
+      // Stop existing stream if already running
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+      }
+
+      statusDisplay.innerText = "Requesting camera...";
+
+      try {
+        // Try rear camera first
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' }
+        });
+      } catch (err) {
+        console.warn("Rear camera unavailable, falling back to default camera:", err);
+        try {
+          // Fallback to any available camera
+          mediaStream = await navigator.mediaDevices.getUserMedia({
+            video: true
+          });
+        } catch (fallbackErr) {
+          statusDisplay.innerText = "Camera Error: " + fallbackErr.message;
+          return;
+        }
+      }
+
+      video.srcObject = mediaStream;
+      try {
+        await video.play();
+      } catch (playErr) {
+        console.warn("Video play notice:", playErr);
+      }
+
+      statusDisplay.innerText = "Listening for preamble...";
+      textDisplay.innerText = "";
+      isReceiving = true;
+      analyzeFrame();
+    }
+
+    function analyzeFrame() {
+      if (!isReceiving) return;
+
+      const video = document.getElementById('video');
+      const statusDisplay = document.getElementById('status');
+      const textDisplay = document.getElementById('receivedText');
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = 20;
+        canvas.height = 20;
+
+        // Sample the center of the video feed
+        const sx = Math.max(0, (video.videoWidth / 2) - 10);
+        const sy = Math.max(0, (video.videoHeight / 2) - 10);
+        ctx.drawImage(video, sx, sy, 20, 20, 0, 0, 20, 20);
+
+        const frameData = ctx.getImageData(0, 0, 20, 20).data;
+
+        // Calculate average brightness
+        let totalBrightness = 0;
+        for (let i = 0; i < frameData.length; i += 4) {
+          totalBrightness += (frameData[i] + frameData[i + 1] + frameData[i + 2]) / 3;
+        }
+        const avgBrightness = totalBrightness / (frameData.length / 4);
+
+        // Display live brightness level to help align the phone torch
+        statusDisplay.innerText = `Listening (Brightness: ${Math.round(avgBrightness)})`;
+      }
+
+      requestAnimationFrame(analyzeFrame);
+    }
+  </script>
 </body>
 </html>
